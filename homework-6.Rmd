@@ -246,19 +246,19 @@ best_roc_auc2
 Display a table of the three ROC AUC values for your best-performing pruned tree, random forest, and boosted tree models. Which performed best on the folds? Select the best of the three and use `select_best()`, `finalize_workflow()`, and `fit()` to fit it to the *testing* set. 
 ```{r}
 all_round_best <- rbind(arrange(collect_metrics(tune_res), desc(mean))[2:7][1,],
-arrange(collect_metrics(tune_res2), desc(mean))[4:9][1,], arrange(collect_metrics(boost_res), desc(mean))[2:7][1,],)
+arrange(collect_metrics(tune_res2), desc(mean))[4:9][1,])
 
 all_round_best <- data.frame(all_round_best)
 
-Method <- c("Pruned tree", "Random forest", "Boosted tree")
+Method <- c("Pruned tree", "Random forest")
 
 all_round_best['Method'] <- Method
 
 all_round_best
 
-absolute_best = select_best(all_round_best)
+absolute_best = select_best(all_round_best$mean)
 
-best_final <- finalize_workflow(rf_wkflow, best_roc_auc)
+best_final <- finalize_workflow(class_tree_wf, best_complexity)
 
 best_final_fit <- fit(best_final, data = Pokémon_test)
 
@@ -267,6 +267,21 @@ best_final_fit <- fit(best_final, data = Pokémon_test)
 Print the AUC value of your best-performing model on the testing set. Print the ROC curves. Finally, create and visualize a confusion matrix heat map.
 
 ```{r}
+augment(best_final_fit, new_data = Pokémon_test, metric = 'roc_auc')
+
+augment(best_final_fit, new_data = Pokémon_test) %>%
+  roc_auc(truth = type_1, estimate = c(.pred_Fire, .pred_Bug, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic))
+
+augment(best_final_fit, new_data = Pokémon_test) %>%
+  roc_curve(truth = type_1, estimate = c(.pred_Fire, .pred_Bug, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic)) %>%
+  autoplot()
+
+augment(best_final_fit, new_data = Pokémon_test) %>%
+  conf_mat(truth = type_1, estimate = c(.pred_Fire, .pred_Bug, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic))
+
+augment(final_fit, new_data = Pokémon_test) %>%
+  conf_mat(truth = type_1, estimate = c(.pred_Fire, .pred_Bug, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic)) %>%
+  autoplot()
 
 ```
 
@@ -277,3 +292,60 @@ Which classes was your model most accurate at predicting? Which was it worst at?
 ### Exercise 11
 
 Using the `abalone.txt` data from previous assignments, fit and tune a random forest model to predict `age`. Use stratified cross-validation and select ranges for `mtry`, `min_n`, and `trees`. Present your results. What was the model's RMSE on your testing set?
+```{r}
+abalone <- read_csv("abalone.csv")
+
+abalone['age'] = abalone['rings'] + 1.5
+```
+```{r}
+set.seed(91362)
+abalone_split <- initial_split(abalone, prop = 0.80, strata = 'age')
+abalone_train <- training(abalone_split)
+abalone_test <- testing(abalone_split)
+
+set.seed(345)
+abalone_folds <- vfold_cv(abalone_train, strata = age, v = 5)
+
+abalone_recipe <- recipe(age ~ type + longest_shell + diameter + height + whole_weight + shucked_weight + viscera_weight + shell_weight, data = abalone_train) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact(terms = ~ shucked_weight:shell_weight) %>% 
+  step_interact(terms = ~ starts_with('type'):shucked_weight) %>%
+  step_interact(terms = ~longest_shell:diameter) %>%
+  step_normalize(all_predictors())
+
+library(randomForest)
+
+abalone_spec <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+
+abalone_wkflow <- workflow() %>%
+  add_model(abalone_spec) %>%
+  add_recipe(abalone_recipe)
+
+abalone_grid <- grid_regular(mtry(range = c(1, 8)), trees(range = c(1,500)), min_n(range = c(1,8)), levels = 5)
+```
+```{r}
+abalone_res <- tune_grid(
+  object = abalone_wkflow, 
+  resamples = abalone_folds,
+  grid = abalone_grid,
+  metrics = metric_set(rmse),
+  control = control_grid(verbose = TRUE))
+
+autoplot(abalone_res)
+
+best_abalone = arrange(collect_metrics(abalone_res))[1,][1,]
+best_abalone
+
+best_abalone = select_best(abalone_res)
+
+abalone_final <- finalize_workflow(abalone_wkflow, best_abalone)
+
+abalone_final_fit <- fit(abalone_final, data = abalone_train)
+
+augment(abalone_final_fit, new_data = abalone_test, metric = 'rmse')
+augment(abalone_final_fit, new_data = abalone_test) %>%
+  rmse(truth = age, estimate = .pred)
+
+```
